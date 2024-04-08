@@ -28,8 +28,6 @@ abstract contract GearboxLeverage is AdapterBase {
     ICreditFacadeV3 public creditFacade;
     ICreditManagerV3 public creditManager;
 
-    address public constant YEARN_USDC_ADAPTER = 0x2fA039b014FF3167472a1DA127212634E7a57564;
-
     /*//////////////////////////////////////////////////////////////
                                 INITIALIZATION
    //////////////////////////////////////////////////////////////*/

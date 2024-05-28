@@ -26,15 +26,15 @@ While the issue might be correct if the underlying protocol is attackable via re
 ## Improvement Explanations
 
 ### wstETH Looper contract 
-Other than the fixing the issues reported in the audit, different improvements have been added to the contract logic, especially in the `_protocolWithdraw` functions, where few edge cases would fail. For example:
+Other than the fixing the issues reported in the audit, different improvements have been added to the contract logic, especially in the `_protocolWithdraw` flow, where few edge cases would fail. For example:
 - Withdrawing `totalAssets - 1`: the `debtToRepay` was underestimated and so the tx would have reverted since not enough debt was repaid before withdrawing in order to keep the CDP collateralised. 
 We decided to refactor the `debtToRepay` amount by using the `ratio` of collateral being withdrawn with respect to the total (minus debt and slippage), applying the same ratio to the debt calculation.
 
 - Withdrawing `totalAssets` would revert with `ERC4626ExceededMaxWithdraw` error for 1 Wei. Probably being a rounding mismatch between our contract and OZ base ones, `totalAssets` was patched by returning 1 wei less than the calculated amount (when that is greater than 0).
 
-- Another change in the withdraw flow was made in the `_swapToWETH_` func, called in order to repay the flashLoan, where part of the pulled `wstETH` collateral is swapped to `WETH`. Since the flash loan would fail if the received `WETH` amount is lower than the repayment amount, we need to apply a buffer that would account for eventual slippage. 
+- `_swapToWETH_` function, called in order to repay the flashLoan, where part of the pulled `wstETH` collateral is swapped to `WETH`. Since the flash loan would fail if the received `WETH` amount is lower than the repayment amount, we need to apply a buffer that would account for eventual slippage. 
 That naturally would lead to having some extra `ETH` floating in the contract after the swap, which is restaked into `wstETH` in order to have the sufficient amount the user is withdrawing.
 
-- Apart from that, we added measures to make sure eventual dust balance in the contract is accounted for and used at the first useful interaction, in particular: 
+Apart from that, we added measures to make sure eventual dust balance in the contract is accounted for and used at the first useful interaction, in particular: 
 - `wstETH` floating balance held by the strategy: immediately deposited and added as collateral in the `_redepositAsset` function, triggered when the `adjustLeverage` is called. 
 - `ETH` floating balance: taken into account before taking a flashLoan to increase the leverage, is similarly deposited as collateral.

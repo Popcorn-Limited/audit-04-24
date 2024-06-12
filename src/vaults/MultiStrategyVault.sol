@@ -45,6 +45,7 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
     event VaultInitialized(bytes32 contractName, address indexed asset);
 
     error InvalidAsset();
+    error Duplicate();
 
     constructor() {
         _disableInitializers();
@@ -54,7 +55,7 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
      * @notice Initialize a new Vault.
      * @param asset_ Underlying Asset which users will deposit.
      * @param strategies_ strategies to be used to earn interest for this vault.
-     * @param defaultDepositIndex_ index of the strategy that the vault should use on deposit
+     * @param depositIndex_ index of the strategy that the vault should use on deposit
      * @param withdrawalQueue_ indices determining the order in which we should withdraw funds from strategies
      * @param depositLimit_ Maximum amount of assets which can be deposited.
      * @param owner_ Owner of the contract. Controls management functions.
@@ -63,62 +64,78 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
      */
     function initialize(
         IERC20 asset_,
-        IERC4626[] calldata strategies_,
-        uint256 defaultDepositIndex_,
-        uint256[] calldata withdrawalQueue_,
+        IERC4626[] memory strategies_,
+        uint256 depositIndex_,
+        uint256[] memory withdrawalQueue_,
         uint256 depositLimit_,
         address owner_
     ) external initializer {
-        __Pausable_init();
+       __Pausable_init();
         __ReentrancyGuard_init();
         __ERC4626_init(IERC20Metadata(address(asset_)));
         __Owned_init(owner_);
 
         if (address(asset_) == address(0)) revert InvalidAsset();
 
-        // Set Strategies
+        // Cache
         uint256 len = strategies_.length;
-        for (uint256 i; i < len; i++) {
-            if (strategies_[i].asset() != address(asset_)) {
-                revert VaultAssetMismatchNewAdapterAsset();
-            }
-            strategies.push(strategies_[i]);
-            asset_.approve(address(strategies_[i]), type(uint256).max);
-        }
 
-        // Set DefaultDepositIndex
-        if (defaultDepositIndex_ > strategies.length - 1 && defaultDepositIndex_ != type(uint256).max) {
-            revert InvalidIndex();
-        }
-
-        defaultDepositIndex = defaultDepositIndex_;
-
-        // Set WithdrawalQueue
-        if (withdrawalQueue_.length != strategies.length) {
+        // Verify WithdrawalQueue length
+        if (withdrawalQueue_.length != len) {
             revert InvalidWithdrawalQueue();
         }
 
-        withdrawalQueue = new uint256[](withdrawalQueue_.length);
+        if (len > 0) {
+            // Verify strategies and withdrawal queue + approve asset for strategies
+            for (uint256 i; i < len; i++) {
+                _verifyStrategyAndWithdrawalQueue(
+                    i,
+                    len,
+                    address(asset_),
+                    strategies_,
+                    withdrawalQueue_
+                );
 
-        for (uint256 i = 0; i < withdrawalQueue_.length; i++) {
-            uint256 index = withdrawalQueue_[i];
+                // Approve asset for strategy
+                // Doing this inside this loop instead of its own loop for gas savings
+                asset_.approve(address(strategies_[i]), type(uint256).max);
+            }
 
-            if (index > strategies.length - 1 && index != type(uint256).max) {
+            // Validate depositIndex
+            if (depositIndex_ >= len && depositIndex_ != type(uint256).max) {
                 revert InvalidIndex();
             }
 
-            withdrawalQueue[i] = index;
+            // Set withdrawalQueue and strategies
+            strategies = strategies_;
+            withdrawalQueue = withdrawalQueue_;
+        } else {
+            // Validate depositIndex
+            if (depositIndex_ != type(uint256).max) {
+                revert InvalidIndex();
+            }
         }
+
+        depositIndex = depositIndex_;
 
         // Set other state variables
         quitPeriod = 3 days;
         depositLimit = depositLimit_;
         highWaterMark = convertToAssets(1e18);
 
-        _name = string.concat("VaultCraft ", IERC20Metadata(address(asset_)).name(), " Vault");
-        _symbol = string.concat("vc-", IERC20Metadata(address(asset_)).symbol());
+        _name = string.concat(
+            "VaultCraft ",
+            IERC20Metadata(address(asset_)).name(),
+            " Vault"
+        );
+        _symbol = string.concat(
+            "vc-",
+            IERC20Metadata(address(asset_)).symbol()
+        );
 
-        contractName = keccak256(abi.encodePacked("VaultCraft ", name(), block.timestamp, "Vault"));
+        contractName = keccak256(
+            abi.encodePacked("VaultCraft ", name(), block.timestamp, "Vault")
+        );
 
         INITIAL_CHAIN_ID = block.chainid;
         INITIAL_DOMAIN_SEPARATOR = computeDomainSeparator();
@@ -132,6 +149,41 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
 
     function symbol() public view override(IERC20Metadata, ERC20) returns (string memory) {
         return _symbol;
+    }
+
+    // Helper function to verify strategies and withdrawal queue and prevent stack-too-deep
+    function _verifyStrategyAndWithdrawalQueue(
+        uint256 i,
+        uint256 len,
+        address asset_,
+        IERC4626[] memory strategies_,
+        uint256[] memory withdrawalQueue_
+    ) internal view {
+        // Cache
+        uint256 index = withdrawalQueue_[i];
+        IERC4626 strategy = strategies_[i];
+
+        // Verify asset matching
+        if (strategy.asset() != asset_) {
+            revert VaultAssetMismatchNewAdapterAsset();
+        }
+
+        // Verify index not out of bound
+        if (index > len - 1) {
+            revert InvalidIndex();
+        }
+
+        // Check for duplicates
+        for (uint256 n; n < len; n++) {
+            if (n != i) {
+                if (
+                    address(strategy) == address(strategies_[n]) ||
+                    index == withdrawalQueue_[n]
+                ) {
+                    revert Duplicate();
+                }
+            }
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -177,8 +229,8 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
         SafeERC20.safeTransferFrom(IERC20(asset()), caller, address(this), assets);
 
         // deposit into default index strategy or leave funds idle
-        if (defaultDepositIndex != type(uint256).max) {
-            strategies[defaultDepositIndex].deposit(assets, address(this));
+        if (depositIndex != type(uint256).max) {
+            strategies[depositIndex].deposit(assets, address(this));
         }
 
         _mint(receiver, shares);
@@ -208,12 +260,6 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
         // shares are burned and after the assets are transferred, which is a valid state.
         _burn(owner, shares);
 
-        _withdrawStrategyFunds(assets, receiver);
-
-        emit Withdraw(caller, receiver, owner, assets, shares);
-    }
-
-    function _withdrawStrategyFunds(uint256 amount, address receiver) internal {
         // caching
         IERC20 asset_ = IERC20(asset());
         uint256[] memory withdrawalQueue_ = withdrawalQueue;
@@ -221,29 +267,47 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
         // Get the Vault's floating balance.
         uint256 float = asset_.balanceOf(address(this));
 
-        if (amount > float) {
-            // Iterate the withdrawal queue and get indexes
-            // Will revert due to underflow if we empty the stack before pulling the desired amount.
-            uint256 len = withdrawalQueue_.length;
-            for (uint256 i = 0; i < len; i++) {
-                uint256 missing = amount - float;
-
-                IERC4626 strategy = strategies[withdrawalQueue_[i]];
-
-                uint256 withdrawableAssets = strategy.previewRedeem(strategy.balanceOf(address(this)));
-
-                if (withdrawableAssets >= missing) {
-                    strategy.withdraw(missing, address(this), address(this));
-                    break;
-                } else if (withdrawableAssets > 0) {
-                    try strategy.withdraw(withdrawableAssets, address(this), address(this)) {
-                        float += withdrawableAssets;
-                    } catch {}
-                }
-            }
+        if (withdrawalQueue_.length > 0 && assets > float) {
+            _withdrawStrategyFunds(assets, float, withdrawalQueue_);
         }
 
-        asset_.safeTransfer(receiver, amount);
+        asset_.safeTransfer(receiver, assets);
+
+        emit Withdraw(caller, receiver, owner, assets, shares);
+    }
+
+    function _withdrawStrategyFunds(
+        uint256 amount,
+        uint256 float,
+        uint256[] memory queue
+    ) internal {
+        // Iterate the withdrawal queue and get indexes
+        // Will revert due to underflow if we empty the stack before pulling the desired amount.
+        uint256 len = queue.length;
+        for (uint256 i = 0; i < len; i++) {
+            uint256 missing = amount - float;
+
+            IERC4626 strategy = strategies[queue[i]];
+
+            uint256 withdrawableAssets = strategy.previewRedeem(
+                strategy.balanceOf(address(this))
+            );
+
+            if (withdrawableAssets >= missing) {
+                strategy.withdraw(missing, address(this), address(this));
+                break;
+            } else if (withdrawableAssets > 0) {
+                try
+                    strategy.withdraw(
+                        withdrawableAssets,
+                        address(this),
+                        address(this)
+                    )
+                {
+                    float += withdrawableAssets;
+                } catch {}
+            }
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -284,9 +348,14 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
 
     IERC4626[] public strategies;
     IERC4626[] public proposedStrategies;
+
     uint256 public proposedStrategyTime;
-    uint256 public defaultDepositIndex; // index of the strategy to deposit funds by default - if uint.max, leave funds idle
+
+    uint256 public depositIndex; // index of the strategy to deposit funds by default - if uint.max, leave funds idle
+    uint256 public proposedDepositIndex; // index of the strategy to deposit funds by default - if uint.max, leave funds idle
+
     uint256[] public withdrawalQueue; // indexes of the strategy order in the withdrawal queue
+    uint256[] public proposedWithdrawalQueue;
 
     event NewStrategiesProposed();
     event ChangedStrategies();
@@ -304,47 +373,100 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
         return proposedStrategies;
     }
 
-    function setDefaultDepositIndex(uint256 index) external onlyOwner {
+    function getWithdrawalQueue() external view returns (uint256[] memory) {
+        return withdrawalQueue;
+    }
+
+    function getProposedWithdrawalQueue()
+        external
+        view
+        returns (uint256[] memory)
+    {
+        return proposedWithdrawalQueue;
+    }
+
+    function setDepositIndex(uint256 index) external onlyOwner {
         if (index > strategies.length - 1 && index != type(uint256).max) {
             revert InvalidIndex();
         }
 
-        defaultDepositIndex = index;
+        depositIndex = index;
     }
 
-    function setWithdrawalQueue(uint256[] memory indexes) external onlyOwner {
-        if (indexes.length != strategies.length) {
+    function setWithdrawalQueue(uint256[] memory newQueue) external onlyOwner {
+        uint256 len = newQueue.length;
+        if (len != strategies.length) {
             revert InvalidWithdrawalQueue();
         }
 
-        withdrawalQueue = new uint256[](indexes.length);
+        for (uint256 i; i < len; i++) {
+            uint256 index = newQueue[i];
 
-        for (uint256 i = 0; i < indexes.length; i++) {
-            uint256 index = indexes[i];
-
-            if (index > strategies.length - 1 && index != type(uint256).max) {
+            // Verify index not out of bound
+            if (index > len - 1) {
                 revert InvalidIndex();
             }
 
-            withdrawalQueue[i] = index;
+            // Check for duplicates
+            for (uint256 n; n < len; n++) {
+                if (n != i) {
+                    if (index == newQueue[n]) {
+                        revert Duplicate();
+                    }
+                }
+            }
         }
+
+        withdrawalQueue = newQueue;
     }
 
     /**
      * @notice Propose a new adapter for this vault. Caller must be Owner.
      * @param strategies_ A new ERC4626 that should be used as a yield adapter for this asset.
      */
-    function proposeStrategies(IERC4626[] calldata strategies_) external onlyOwner {
+    function proposeStrategies(
+        IERC4626[] calldata strategies_,
+        uint256[] calldata withdrawalQueue_,
+        uint256 depositIndex_
+    ) external onlyOwner {
+        // Cache
         address asset_ = asset();
         uint256 len = strategies_.length;
-        for (uint256 i; i < len; i++) {
-            if (strategies_[i].asset() != asset_) {
-                revert VaultAssetMismatchNewAdapterAsset();
-            }
-            proposedStrategies.push(strategies_[i]);
+
+        // Verify WithdrawalQueue length
+        if (withdrawalQueue_.length != len) {
+            revert InvalidWithdrawalQueue();
         }
 
+        if (len > 0) {
+            // Validate depositIndex
+            if (depositIndex_ >= len && depositIndex_ != type(uint256).max) {
+                revert InvalidIndex();
+            }
+
+            // Verify strategies and withdrawal queue
+            for (uint256 i; i < len; i++) {
+                _verifyStrategyAndWithdrawalQueue(
+                    i,
+                    len,
+                    asset_,
+                    strategies_,
+                    withdrawalQueue_
+                );
+            }
+        } else {
+            // Validate depositIndex
+            if (depositIndex_ != type(uint256).max) {
+                revert InvalidIndex();
+            }
+        }
+
+        // Set proposed state
+        proposedStrategies = strategies_;
+        proposedWithdrawalQueue = withdrawalQueue_;
+        proposedDepositIndex = depositIndex_;
         proposedStrategyTime = block.timestamp;
+
         emit NewStrategiesProposed();
     }
 
@@ -355,28 +477,44 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
      * @dev Last we update HWM and assetsCheckpoint for fees to make sure they adjust to the new adapter
      */
     function changeStrategies() external {
-        if (proposedStrategyTime == 0 || block.timestamp < proposedStrategyTime + quitPeriod) {
+        if (
+            proposedStrategyTime == 0 ||
+            block.timestamp < proposedStrategyTime + quitPeriod
+        ) {
             revert NotPassedQuitPeriod(quitPeriod);
         }
 
         address asset_ = asset();
         uint256 len = strategies.length;
-        for (uint256 i; i < len; i++) {
-            strategies[i].redeem(strategies[i].balanceOf(address(this)), address(this), address(this));
-            IERC20(asset_).approve(address(strategies[i]), 0);
+        if (len > 0) {
+            for (uint256 i; i < len; i++) {
+                strategies[i].redeem(
+                    strategies[i].balanceOf(address(this)),
+                    address(this),
+                    address(this)
+                );
+                IERC20(asset_).approve(address(strategies[i]), 0);
+            }
         }
-
-        delete strategies;
 
         len = proposedStrategies.length;
-        for (uint256 i; i < len; i++) {
-            strategies.push(proposedStrategies[i]);
-
-            IERC20(asset_).approve(address(proposedStrategies[i]), type(uint256).max);
+        if (len > 0) {
+            for (uint256 i; i < len; i++) {
+                IERC20(asset_).approve(
+                    address(proposedStrategies[i]),
+                    type(uint256).max
+                );
+            }
         }
 
-        delete proposedStrategyTime;
+        strategies = proposedStrategies;
+        withdrawalQueue = proposedWithdrawalQueue;
+        depositIndex = proposedDepositIndex;
+
         delete proposedStrategies;
+        delete proposedWithdrawalQueue;
+        delete proposedDepositIndex;
+        delete proposedStrategyTime;
 
         emit ChangedStrategies();
     }

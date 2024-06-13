@@ -190,6 +190,8 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
                         DEPOSIT/WITHDRAWAL LOGIC
     //////////////////////////////////////////////////////////////*/
 
+    event StrategyWithdrawalFailed(address strategy, uint256 amount);
+
     error ZeroAmount();
 
     function deposit(uint256 assets) public returns (uint256) {
@@ -294,8 +296,13 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
             );
 
             if (withdrawableAssets >= missing) {
-                strategy.withdraw(missing, address(this), address(this));
+                try
+                    strategy.withdraw(missing, address(this), address(this))
+                {
                 break;
+                } catch {
+                    emit StrategyWithdrawalFailed(address(strategy), missing);
+                }
             } else if (withdrawableAssets > 0) {
                 try
                     strategy.withdraw(
@@ -305,7 +312,9 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
                     )
                 {
                     float += withdrawableAssets;
-                } catch {}
+                } catch {
+                    emit StrategyWithdrawalFailed(address(strategy), withdrawableAssets);
+                }
             }
         }
     }
@@ -573,6 +582,8 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
         // Dont take more than 20% performanceFee
         if (newFee > 2e17) revert InvalidPerformanceFee(newFee);
 
+        _takeFees();
+
         emit PerformanceFeeChanged(performanceFee, newFee);
 
         performanceFee = newFee;
@@ -581,6 +592,10 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
     /// @notice Collect performance fees and update asset checkpoint.
     modifier takeFees() {
         _;
+        _takeFees();
+    }
+
+    function _takeFees() internal {
         uint256 fee = accruedPerformanceFee();
         uint256 shareValue = convertToAssets(1e18);
 

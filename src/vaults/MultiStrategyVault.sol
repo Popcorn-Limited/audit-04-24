@@ -151,7 +151,7 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
         return _symbol;
     }
 
-    // Helper function to verify strategies and withdrawal queue and prevent stack-too-deep
+    /// Helper function to verify strategies and withdrawal queue and prevent stack-too-deep
     function _verifyStrategyAndWithdrawalQueue(
         uint256 i,
         uint256 len,
@@ -394,6 +394,11 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
         return proposedWithdrawalQueue;
     }
 
+    /**
+     * @notice Sets a new depositIndex. Caller must be Owner.
+     * @param index The index controls which strategy will be used on user deposits. 
+     * @dev To simply transfer user assets into the vault without using a strategy set the index to `type(uint256).max`
+     */
     function setDepositIndex(uint256 index) external onlyOwner {
         if (index > strategies.length - 1 && index != type(uint256).max) {
             revert InvalidIndex();
@@ -402,6 +407,11 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
         depositIndex = index;
     }
 
+    /**
+     * @notice Sets a new withdrawal queue. Caller must be Owner.
+     * @param newQueue The order in which the vault should withdraw from the `strategies`
+     * @dev Verifies that now index is out of bounds or duplicate. Each strategy index must be included exactly once.
+     */
     function setWithdrawalQueue(uint256[] memory newQueue) external onlyOwner {
         uint256 len = newQueue.length;
         if (len != strategies.length) {
@@ -430,8 +440,10 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
     }
 
     /**
-     * @notice Propose a new adapter for this vault. Caller must be Owner.
-     * @param strategies_ A new ERC4626 that should be used as a yield adapter for this asset.
+     * @notice Propose new strategies for this vault. Caller must be Owner.
+     * @param strategies_ New ERC4626s that should be used as a strategy for this asset.
+     * @param withdrawalQueue_ The order in which the vault should withdraw from the `strategies`
+     * @param depositIndex_ Index of the strategy to be used on user deposits
      */
     function proposeStrategies(
         IERC4626[] calldata strategies_,
@@ -480,10 +492,9 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
     }
 
     /**
-     * @notice Set a new Adapter for this Vault after the quit period has passed.
-     * @dev This migration function will remove all assets from the old Vault and move them into the new vault
+     * @notice Set new strategies for this Vault after the quit period has passed.
+     * @dev This migration function will remove all assets from the old strategies and move them into the new strategies
      * @dev Additionally it will zero old allowances and set new ones
-     * @dev Last we update HWM and assetsCheckpoint for fees to make sure they adjust to the new adapter
      */
     function changeStrategies() external {
         if (
@@ -528,6 +539,10 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
         emit ChangedStrategies();
     }
 
+    /**
+     * @notice Push idle funds into strategies. Caller must be Owner.
+     * @param allocations An array of structs each including the strategyIndex to deposit into and the amount of assets
+     */
     function pushFunds(Allocation[] calldata allocations) external onlyOwner {
         uint256 len = allocations.length;
         for (uint256 i; i < len; i++) {
@@ -535,6 +550,10 @@ contract MultiStrategyVault is ERC4626Upgradeable, ReentrancyGuardUpgradeable, P
         }
     }
 
+    /**
+     * @notice Pull funds out of strategies to be reallocated into different strategies. Caller must be Owner.
+     * @param allocations An array of structs each including the strategyIndex to withdraw from and the amount of assets
+     */
     function pullFunds(Allocation[] calldata allocations) external onlyOwner {
         uint256 len = allocations.length;
         for (uint256 i; i < len; i++) {
